@@ -772,6 +772,12 @@ def time_to_array(timestring):
         print('Error while extracting time array')
         return []
 
+
+def array_to_bin(values):
+    """Convert a list of values to a tuple suitable for struct.pack."""
+    return tuple(values)
+
+
 class martaslog(object):
     """
     Class for dealing with and sending out change notifications
