@@ -15,13 +15,23 @@ from twisted.python import log
 from martas.core import methods as mm
 
 
+PACK_CODE = "6hLffflllfff"
+DATA_KEYS = "[x,y,z,t1,t2,var2,var3,var4,var5]"
+DATA_NAMES = "[X,Y,Z,TE,TF,UIN,Latitude,Longitude,Altitude]"
+DATA_UNITS = "[nT,nT,nT,deg_C,deg_C,V,deg,deg,m]"
+DATA_FACTORS = "[0.001,0.001,0.001,100,100,10,1,1,1]"
+
+# var3 latitude:
+# var4 longitude:
+# var5 altitude:
+
 class Lemi018Protocol(LineReceiver):
     """Protocol to read newline-delimited LEMI018 ASCII records."""
 
     delimiter = b"\n"
 
     def __init__(self, client, sensordict, confdict):
-        print("[LEMI018] Using patched protocol implementation from martas/lib/lemi018protocol.py")
+        log.msg("LEMI018 protocol init starting")
         self.client = client
         self.sensordict = sensordict
         self.confdict = confdict
@@ -57,7 +67,7 @@ class Lemi018Protocol(LineReceiver):
         else:
             log.msg("  -> Debug mode = {}".format(debugtest))
 
-        print("Initializing LEMI018 finished")
+        log.msg("Initializing LEMI018 finished")
 
     def connectionMade(self):
         log.msg("  -> {} connected.".format(self.sensor))
@@ -87,6 +97,30 @@ class Lemi018Protocol(LineReceiver):
         except Exception:
             return default
 
+    def _gps_coordinate(self, value, hemisphere):
+        value = self._safe_float(value)
+        hemisphere = str(hemisphere or "").strip().upper()
+        if value is None:
+            return float("nan")
+
+        if hemisphere in ["N", "S"]:
+            degrees = int(value / 100)
+            minutes = value - (degrees * 100)
+            decimal = degrees + minutes / 60.0
+            if hemisphere == "S":
+                decimal *= -1.0
+            return decimal
+
+        if hemisphere in ["E", "W"]:
+            degrees = int(value / 100)
+            minutes = value - (degrees * 100)
+            decimal = degrees + minutes / 60.0
+            if hemisphere == "W":
+                decimal *= -1.0
+            return decimal
+
+        return value
+
     def _buffer_path(self):
         path = os.path.join(self.confdict.get("bufferdirectory"), self.sensor)
         if not os.path.exists(path):
@@ -94,33 +128,31 @@ class Lemi018Protocol(LineReceiver):
         return path
 
     def _binary_header(self):
-        packcode = "6hLffflll"
         header = "# MagPyBin {} {} {} {} {} {} {}\n".format(
             self.sensor,
-            "[x,y,z,t1,t2,var2]",
-            "[X,Y,Z,TE,TF,UIN]",
-            "[nT,nT,nT,deg_C,deg_C,V]",
-            "[0.001,0.001,0.001,100,100,10]",
-            packcode,
-            struct.calcsize("<" + packcode),
+            DATA_KEYS,
+            DATA_NAMES,
+            DATA_UNITS,
+            DATA_FACTORS,
+            PACK_CODE,
+            struct.calcsize("<" + PACK_CODE),
         )
         if self.pvers > 2:
             return header.encode("ascii")
         return header
 
     def _meta_header(self):
-        sendpackcode = "6hLffflll"
         return "# MagPyBin {} {} {} {} {} {} {}\n".format(
             self.sensor,
-            "[x,y,z,t1,t2,var2]",
-            "[X,Y,Z,TE,TF,UIN]",
-            "[nT,nT,nT,deg_C,deg_C,V]",
-            "[0.001,0.001,0.001,100,100,10]",
-            sendpackcode,
-            struct.calcsize("<" + sendpackcode),
+            DATA_KEYS,
+            DATA_NAMES,
+            DATA_UNITS,
+            DATA_FACTORS,
+            PACK_CODE,
+            struct.calcsize("<" + PACK_CODE),
         )
 
-    def _write_binary_record(self, path, date, datearray, bx, by, bz, te, tf, uin):
+    def _output_path(self, path, date):
         outpath = os.path.join(path, self.sensor + "_" + date + ".bin")
         header = self._binary_header()
 
@@ -129,10 +161,36 @@ class Lemi018Protocol(LineReceiver):
                 fh.write(header)
                 if not header.endswith(b"\n"):
                     fh.write(b"\n")
+            return outpath
+
+        with open(outpath, "rb") as fh:
+            existing_header = fh.readline()
+            rest = fh.read(1)
+
+        if PACK_CODE.encode("ascii") in existing_header:
+            return outpath
+
+        if not rest:
+            with open(outpath, "wb") as fh:
+                fh.write(header)
+                if not header.endswith(b"\n"):
+                    fh.write(b"\n")
+            return outpath
+
+        gpspath = os.path.join(path, self.sensor + "_" + date + "_gps.bin")
+        if not os.path.exists(gpspath):
+            with open(gpspath, "ab") as fh:
+                fh.write(header)
+                if not header.endswith(b"\n"):
+                    fh.write(b"\n")
+        return gpspath
+
+    def _write_binary_record(self, path, date, datearray, bx, by, bz, te, tf, uin, latitude, longitude, altitude):
+        outpath = self._output_path(path, date)
 
         try:
             rec = struct.pack(
-                "<6hLffflll",
+                "<" + PACK_CODE,
                 datearray[0],
                 datearray[1],
                 datearray[2],
@@ -146,6 +204,9 @@ class Lemi018Protocol(LineReceiver):
                 int(round(float(te) * 100.0)),
                 int(round(float(tf) * 100.0)),
                 int(round(float(uin) * 10.0)),
+                float(latitude),
+                float(longitude),
+                float(altitude),
             )
             with open(outpath, "ab") as fh:
                 fh.write(rec)
@@ -248,20 +309,23 @@ class Lemi018Protocol(LineReceiver):
             gps_time = datetime.strftime(gpstime, "%Y-%m-%d %H:%M:%S.%f")
             date = datetime.strftime(gpstime, "%Y-%m-%d")
             datearray = mm.time_to_array(gps_time)
+            altitude = float("nan")
+            latitude = float("nan")
+            longitude = float("nan")
 
             if len(parts) >= 20:
-                altitude = parts[12]
-                latitude = parts[13]
+                altitude = self._safe_float(parts[12], float("nan"))
                 lat_hemi = parts[14]
-                longitude = parts[15]
                 lon_hemi = parts[16]
                 satellites = parts[17]
                 gps_fix = parts[18]
                 time_diff = parts[19]
+                latitude = self._gps_coordinate(parts[13], lat_hemi)
+                longitude = self._gps_coordinate(parts[15], lon_hemi)
 
-                self.last_altitude = altitude
-                self.last_latitude = "{}{}".format(latitude, lat_hemi).strip()
-                self.last_longitude = "{}{}".format(longitude, lon_hemi).strip()
+                self.last_altitude = "" if altitude != altitude else str(altitude)
+                self.last_latitude = "" if latitude != latitude else str(latitude)
+                self.last_longitude = "" if longitude != longitude else str(longitude)
                 self.last_satellites = satellites
                 self.last_gps_fix = gps_fix
                 self.last_time_diff = time_diff
@@ -283,6 +347,9 @@ class Lemi018Protocol(LineReceiver):
                 te,
                 tf,
                 uin,
+                latitude,
+                longitude,
+                altitude,
             )
 
             datalst = mm.time_to_array(gps_time)
@@ -292,6 +359,9 @@ class Lemi018Protocol(LineReceiver):
             datalst.append(int(round(float(te) * 100.0)))
             datalst.append(int(round(float(tf) * 100.0)))
             datalst.append(int(round(float(uin) * 10.0)))
+            datalst.append(float(latitude))
+            datalst.append(float(longitude))
+            datalst.append(float(altitude))
 
             dataarray = ",".join(map(str, datalst))
             return dataarray, self._meta_header()
@@ -301,7 +371,6 @@ class Lemi018Protocol(LineReceiver):
             return "", self._meta_header()
 
     def lineReceived(self, line):
-        log.msg("LEMI018 RAW: {}".format(line))
         topic = self.confdict.get("station") + "/" + self.sensordict.get("sensorid")
 
         try:
