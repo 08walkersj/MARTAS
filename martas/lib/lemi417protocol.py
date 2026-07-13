@@ -13,6 +13,7 @@ from martas.core import methods as mm
 
 FRAME_SIGNATURE = b"L417"
 FRAME_SIZE = 47
+PACK_CODE = "6hLfffhhllll"
 
 
 def data2_to_double(z):
@@ -36,9 +37,14 @@ def data4_to_double(z):
     return tmp / 100.0
 
 
+def bcd_to_int(value):
+    return int(format(value, "02x"))
+
+
 class Lemi417Protocol(LineReceiver):
     def __init__(self, client, sensordict, confdict):
         log.msg("LEMI417 protocol init starting")
+        print("LEMI417 protocol using patched MagPyBin writer: {}".format(__file__))
 
         self.client = client
         self.sensordict = sensordict
@@ -50,6 +56,9 @@ class Lemi417Protocol(LineReceiver):
         self.buffer = b""
         self.pvers = 2
         self.datacnt = 0
+        self.debug_chunks = 0
+        self.no_signature_logs = 0
+        self.partial_frame_logs = 0
 
         self._init_file()
 
@@ -68,29 +77,56 @@ class Lemi417Protocol(LineReceiver):
             self.sensor + "_" + datetime.datetime.utcnow().strftime("%Y-%m-%d") + ".bin",
         )
 
-        if not os.path.exists(self.filename):
-            header = "# MagPyBin {} {} {} {} {} {} {}\n".format(
-                self.sensor,
-                "[x,y,z,t1,t2,var1,var2,var3,var4]",
-                "[X,Y,Z,Te,Tf,E1,E2,E3,E4]",
-                "[nT,nT,nT,deg,deg,V,V,V,V]",
-                "[0.001,0.001,0.001,100,100,100,100,100,100]",
-                "6hLfffhhhhhh",
-                struct.calcsize("<6hLfffhhhhhh"),
-            )
+        header = self._binary_header()
+        write_header = not os.path.exists(self.filename)
+        if not write_header:
+            with open(self.filename, "rb") as fh:
+                existing_header = fh.readline()
+                rest = fh.read(1)
+            if PACK_CODE.encode("ascii") not in existing_header and not rest:
+                log.msg("LEMI417 replacing header-only file with updated pack code {}".format(PACK_CODE))
+                write_header = True
+
+        if write_header:
             with open(self.filename, "wb") as fh:
-                fh.write(header.encode("ascii"))
+                fh.write(header)
+
+    def _binary_header(self):
+        return "# MagPyBin {} {} {} {} {} {} {}\n".format(
+            self.sensor,
+            "[x,y,z,t1,t2,var1,var2,var3,var4]",
+            "[X,Y,Z,Te,Tf,E1,E2,E3,E4]",
+            "[nT,nT,nT,deg,deg,V,V,V,V]",
+            "[0.001,0.001,0.001,100,100,100,100,100,100]",
+            PACK_CODE,
+            struct.calcsize("<" + PACK_CODE),
+        ).encode("ascii")
 
     def dataReceived(self, data):
+        if self.debug_chunks < 20:
+            preview = data[:64].hex()
+            log.msg("LEMI417 dataReceived chunk {}: len={} hex={}".format(self.debug_chunks + 1, len(data), preview))
+            self.debug_chunks += 1
+
         self.buffer += data
 
         while True:
             idx = self.buffer.find(FRAME_SIGNATURE)
             if idx < 0:
-                self.buffer = b""
+                if self.no_signature_logs < 20 and self.buffer:
+                    log.msg("LEMI417 frame signature {!r} not found in buffer len={} hex={}".format(
+                        FRAME_SIGNATURE,
+                        len(self.buffer),
+                        self.buffer[:64].hex(),
+                    ))
+                    self.no_signature_logs += 1
+                self.buffer = self._signature_prefix_suffix(self.buffer)
                 return
 
             if len(self.buffer) < idx + FRAME_SIZE:
+                if self.partial_frame_logs < 20:
+                    log.msg("LEMI417 partial frame: idx={} buffer_len={} required={}".format(idx, len(self.buffer), idx + FRAME_SIZE))
+                    self.partial_frame_logs += 1
                 return
 
             frame = self.buffer[idx:idx + FRAME_SIZE]
@@ -103,16 +139,25 @@ class Lemi417Protocol(LineReceiver):
                 log.msg("LEMI417 unpack error {}".format(exc))
                 continue
 
-            year = unpacked[3]
-            month = unpacked[4]
-            day = unpacked[5]
-            hour = unpacked[6]
-            minute = unpacked[7]
-            second = unpacked[8]
+            year = bcd_to_int(unpacked[3])
+            month = bcd_to_int(unpacked[4])
+            day = bcd_to_int(unpacked[5])
+            hour = bcd_to_int(unpacked[6])
+            minute = bcd_to_int(unpacked[7])
+            second = bcd_to_int(unpacked[8])
 
             try:
                 gpstime = datetime.datetime(2000 + year, month, day, hour, minute, second)
-            except Exception:
+            except Exception as exc:
+                log.msg("LEMI417 invalid timestamp y={} m={} d={} h={} min={} s={}: {}".format(
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    exc,
+                ))
                 continue
 
             bx = data3_to_double(unpacked[11:14])
@@ -149,10 +194,20 @@ class Lemi417Protocol(LineReceiver):
                 log.msg("MQTT publish failed {}".format(exc))
 
             try:
-                rec = struct.pack("<6hLfffhhhhhh", *mm.array_to_bin(datalst))
+                rec = struct.pack("<" + PACK_CODE, *mm.array_to_bin(datalst))
                 with open(self.filename, "ab") as fh:
                     fh.write(rec)
+                    fh.write(b"\n")
             except Exception as exc:
                 log.msg("LEMI417 bin write error {}".format(exc))
 
             self.datacnt += 1
+
+    def _signature_prefix_suffix(self, data):
+        """Keep bytes that could be the start of a split frame signature."""
+        max_len = min(len(data), len(FRAME_SIGNATURE) - 1)
+        for length in range(max_len, 0, -1):
+            suffix = data[-length:]
+            if FRAME_SIGNATURE.startswith(suffix):
+                return suffix
+        return b""
