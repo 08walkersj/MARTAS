@@ -103,6 +103,8 @@ msgcount = 0
 SUPPORTED_PROTOCOLS = {'Env' : {"name" : "Envrionement 05 sensor", "type" : "passive", "status" : "productive"},
                        'Ow' : {"name" : "One wire sensors", "status" : "productive"},
                        'Lemi' : {"name" : "LEMI sensors L25 and L36", "status" : "productive"},
+                       'Lemi018' : {"name" : "LEMI018 variometer", "type" : "passive", "status" : "experimental"},
+                       'Lemi417' : {"name" : "LEMI417 variometer", "type" : "passive", "status" : "experimental"},
                        'Arduino' : {"name" : "Arduino microcontroller", "status" : ""},
                        'GSM90' : {"name" : "GEM Systems Overhauser observatory 90", "type" : "passive (init)", "status" : "productive"},
                        'GSM19' : {"name" : "GEM Systems Overhauser mobile 19", "status" : "productive"},

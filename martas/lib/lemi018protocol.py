@@ -21,7 +21,7 @@ class Lemi018Protocol(LineReceiver):
     delimiter = b"\n"
 
     def __init__(self, client, sensordict, confdict):
-        print("Initializing LEMI018")
+        print("[LEMI018] Using patched protocol implementation from martas/lib/lemi018protocol.py")
         self.client = client
         self.sensordict = sensordict
         self.confdict = confdict
@@ -94,15 +94,15 @@ class Lemi018Protocol(LineReceiver):
         return path
 
     def _binary_header(self):
-        packcode = "<6hLffflll"
-        header = "# MagPyBin {} {} {} {} {} {} {}".format(
+        packcode = "6hLffflll"
+        header = "# MagPyBin {} {} {} {} {} {} {}\n".format(
             self.sensor,
             "[x,y,z,t1,t2,var2]",
             "[X,Y,Z,TE,TF,UIN]",
             "[nT,nT,nT,deg_C,deg_C,V]",
             "[0.001,0.001,0.001,100,100,10]",
             packcode,
-            struct.calcsize(packcode),
+            struct.calcsize("<" + packcode),
         )
         if self.pvers > 2:
             return header.encode("ascii")
@@ -110,7 +110,7 @@ class Lemi018Protocol(LineReceiver):
 
     def _meta_header(self):
         sendpackcode = "6hLffflll"
-        return "# MagPyBin {} {} {} {} {} {} {}".format(
+        return "# MagPyBin {} {} {} {} {} {} {}\n".format(
             self.sensor,
             "[x,y,z,t1,t2,var2]",
             "[X,Y,Z,TE,TF,UIN]",
@@ -127,6 +127,8 @@ class Lemi018Protocol(LineReceiver):
         if not os.path.exists(outpath):
             with open(outpath, "ab") as fh:
                 fh.write(header)
+                if not header.endswith(b"\n"):
+                    fh.write(b"\n")
 
         try:
             rec = struct.pack(
@@ -147,6 +149,7 @@ class Lemi018Protocol(LineReceiver):
             )
             with open(outpath, "ab") as fh:
                 fh.write(rec)
+                fh.write(b"\n")
         except Exception as exc:
             log.err("LEMI018 - Protocol: Could not write data to file: {}".format(exc))
 
