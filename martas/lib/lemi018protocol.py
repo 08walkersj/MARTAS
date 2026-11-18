@@ -19,7 +19,7 @@ PACK_CODE = "6hLffflllfff"
 DATA_KEYS = "[x,y,z,t1,t2,var2,var3,var4,var5]"
 DATA_NAMES = "[X,Y,Z,TE,TF,UIN,Latitude,Longitude,Altitude]"
 DATA_UNITS = "[nT,nT,nT,deg_C,deg_C,V,deg,deg,m]"
-DATA_FACTORS = "[0.001,0.001,0.001,100,100,10,1,1,1]"
+DATA_FACTORS = "[1,1,1,100,100,10,1,1,1]"
 
 # var3 latitude:
 # var4 longitude:
